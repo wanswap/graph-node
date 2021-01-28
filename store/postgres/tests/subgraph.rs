@@ -4,13 +4,14 @@ use graph::{
     data::subgraph::schema::SubgraphHealth,
     prelude::EntityChange,
     prelude::EntityChangeOperation,
+    prelude::QueryStoreManager,
     prelude::Schema,
     prelude::StoreEvent,
     prelude::SubgraphDeploymentEntity,
     prelude::SubgraphManifest,
     prelude::SubgraphName,
     prelude::SubgraphVersionSwitchingMode,
-    prelude::{NodeId, Store as _, SubgraphDeploymentId},
+    prelude::{CheapClone, NodeId, Store as _, SubgraphDeploymentId},
 };
 use graph_store_postgres::layout_for_tests::Connection as Primary;
 use graph_store_postgres::NetworkStore;
@@ -447,5 +448,95 @@ fn version_info() {
         // and can therefore not find the network or the head block
         assert_eq!(None, vi.total_ethereum_blocks_count);
         assert_eq!(None, vi.network);
+    })
+}
+
+#[test]
+fn subgraph_error() {
+    test_store::run_test_sequentially(
+        || (),
+        |store, _| async move {
+            let subgraph_id = SubgraphDeploymentId::new("testSubgraph").unwrap();
+            test_store::create_test_subgraph(&subgraph_id, "type Foo { id: ID! }");
+
+            let count = || -> usize {
+                let store = store.store();
+                store.error_count(&subgraph_id).unwrap()
+            };
+
+            let error = SubgraphError {
+                subgraph_id: subgraph_id.clone(),
+                message: "test".to_string(),
+                block_ptr: None,
+                handler: None,
+                deterministic: false,
+            };
+
+            assert!(count() == 0);
+
+            transact_errors(&store, subgraph_id.clone(), BLOCKS[1].clone(), vec![error]).unwrap();
+            assert!(count() == 1);
+
+            let error = SubgraphError {
+                subgraph_id: subgraph_id.clone(),
+                message: "test".to_string(),
+                block_ptr: None,
+                handler: None,
+                deterministic: false,
+            };
+
+            // Inserting the same error is allowed but ignored.
+            transact_errors(&store, subgraph_id.clone(), BLOCKS[2].clone(), vec![error]).unwrap();
+            assert!(count() == 1);
+
+            let error2 = SubgraphError {
+                subgraph_id: subgraph_id.clone(),
+                message: "test2".to_string(),
+                block_ptr: None,
+                handler: None,
+                deterministic: false,
+            };
+
+            transact_errors(&store, subgraph_id.clone(), BLOCKS[3].clone(), vec![error2]).unwrap();
+            assert!(count() == 2);
+
+            test_store::remove_subgraph(&subgraph_id);
+        },
+    )
+}
+
+#[test]
+fn fatal_vs_non_fatal() {
+    fn setup() -> SubgraphDeploymentId {
+        let id = SubgraphDeploymentId::new("failUnfail").unwrap();
+        remove_subgraphs();
+        create_test_subgraph(&id, SUBGRAPH_GQL);
+        id
+    }
+
+    run_test_sequentially(setup, |store, id| async move {
+        let query_store = store.query_store(id.cheap_clone().into(), false).unwrap();
+
+        let error = || SubgraphError {
+            subgraph_id: id.clone(),
+            message: "test".to_string(),
+            block_ptr: Some(BLOCKS[1]),
+            handler: None,
+            deterministic: true,
+        };
+
+        store.fail_subgraph(id.clone(), error()).await.unwrap();
+
+        assert!(!query_store
+            .has_non_fatal_errors(id.cheap_clone(), None)
+            .await
+            .unwrap());
+
+        transact_errors(&store, id.clone(), BLOCKS[1].clone(), vec![error()]).unwrap();
+
+        assert!(query_store
+            .has_non_fatal_errors(id.cheap_clone(), None)
+            .await
+            .unwrap());
     })
 }

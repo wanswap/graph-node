@@ -117,13 +117,8 @@ impl Store for MockStore {
     fn revert_block_operations(
         &self,
         _subgraph_id: SubgraphDeploymentId,
-        _block_ptr_from: EthereumBlockPointer,
         _block_ptr_to: EthereumBlockPointer,
     ) -> Result<(), StoreError> {
-        unimplemented!()
-    }
-
-    fn subscribe(&self, _entities: Vec<SubscriptionFilter>) -> StoreEventStreamBox {
         unimplemented!()
     }
 
@@ -172,6 +167,10 @@ impl Store for MockStore {
     }
 
     fn reassign_subgraph(&self, _: &SubgraphDeploymentId, _: &NodeId) -> Result<(), StoreError> {
+        unimplemented!()
+    }
+
+    fn unassign_subgraph(&self, _: &SubgraphDeploymentId) -> Result<(), StoreError> {
         unimplemented!()
     }
 

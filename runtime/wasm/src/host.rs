@@ -25,8 +25,8 @@ use graph::prelude::{
 use graph::util;
 use web3::types::{Log, Transaction};
 
-use crate::host_exports::HostExports;
 use crate::mapping::{MappingContext, MappingRequest, MappingTrigger};
+use crate::{host_exports::HostExports, module::ExperimentalFeatures};
 
 lazy_static! {
     static ref TIMEOUT: Option<Duration> = std::env::var("GRAPH_MAPPING_HANDLER_TIMEOUT")
@@ -35,6 +35,10 @@ lazy_static! {
         .map(Duration::from_secs);
     static ref ALLOW_NON_DETERMINISTIC_IPFS: bool =
         std::env::var("GRAPH_ALLOW_NON_DETERMINISTIC_IPFS").is_ok();
+    static ref ALLOW_NON_DETERMINISTIC_3BOX: bool =
+        std::env::var("GRAPH_ALLOW_NON_DETERMINISTIC_3BOX").is_ok();
+    static ref ALLOW_NON_DETERMINISTIC_ARWEAVE: bool =
+        std::env::var("GRAPH_ALLOW_NON_DETERMINISTIC_ARWEAVE").is_ok();
 }
 
 struct RuntimeHostConfig {
@@ -43,6 +47,7 @@ struct RuntimeHostConfig {
     data_source_network: String,
     data_source_name: String,
     data_source_context: Option<DataSourceContext>,
+    data_source_creation_block: Option<u64>,
     contract: Source,
     templates: Arc<Vec<DataSourceTemplate>>,
 }
@@ -104,6 +109,11 @@ where
         subgraph_id: SubgraphDeploymentId,
         metrics: Arc<HostMetrics>,
     ) -> Result<Sender<Self::Req>, Error> {
+        let experimental_features = ExperimentalFeatures {
+            allow_non_deterministic_arweave: *ALLOW_NON_DETERMINISTIC_ARWEAVE,
+            allow_non_deterministic_3box: *ALLOW_NON_DETERMINISTIC_3BOX,
+            allow_non_deterministic_ipfs: *ALLOW_NON_DETERMINISTIC_IPFS,
+        };
         crate::mapping::spawn_module(
             raw_module,
             logger,
@@ -111,7 +121,7 @@ where
             metrics,
             tokio::runtime::Handle::current(),
             *TIMEOUT,
-            *ALLOW_NON_DETERMINISTIC_IPFS,
+            experimental_features,
         )
     }
 
@@ -148,6 +158,7 @@ where
                 data_source_network: network_name,
                 data_source_name: data_source.name,
                 data_source_context: data_source.context,
+                data_source_creation_block: data_source.creation_block,
                 contract: data_source.source,
                 templates,
             },
@@ -167,6 +178,7 @@ pub struct RuntimeHost {
     data_source_event_handlers: Vec<MappingEventHandler>,
     data_source_call_handlers: Vec<MappingCallHandler>,
     data_source_block_handlers: Vec<MappingBlockHandler>,
+    data_source_creation_block: Option<u64>,
     mapping_request_sender: Sender<MappingRequest>,
     host_exports: Arc<HostExports>,
     metrics: Arc<HostMetrics>,
@@ -235,6 +247,7 @@ impl RuntimeHost {
             data_source_event_handlers: config.mapping.event_handlers,
             data_source_call_handlers: config.mapping.call_handlers,
             data_source_block_handlers: config.mapping.block_handlers,
+            data_source_creation_block: config.data_source_creation_block,
             mapping_request_sender,
             host_exports,
             metrics,
@@ -715,6 +728,10 @@ impl RuntimeHostTrait for RuntimeHost {
         .err_into()
         .await
     }
+
+    fn creation_block_number(&self) -> Option<u64> {
+        self.data_source_creation_block
+    }
 }
 
 impl PartialEq for RuntimeHost {
@@ -727,6 +744,9 @@ impl PartialEq for RuntimeHost {
             data_source_call_handlers,
             data_source_block_handlers,
             host_exports,
+
+            // The creation block is ignored for detection duplicate data sources.
+            data_source_creation_block: _,
             mapping_request_sender: _,
             metrics: _,
         } = self;

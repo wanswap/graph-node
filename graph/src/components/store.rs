@@ -923,6 +923,14 @@ pub struct StoredDynamicDataSource {
     pub name: String,
     pub source: Source,
     pub context: Option<String>,
+    pub creation_block: Option<u64>,
+}
+
+pub trait SubscriptionManager: Send + Sync + 'static {
+    /// Subscribe to changes for specific subgraphs and entities.
+    ///
+    /// Returns a stream of store events that match the input arguments.
+    fn subscribe(&self, entities: Vec<SubscriptionFilter>) -> StoreEventStreamBox;
 }
 
 /// Common trait for store implementations.
@@ -986,21 +994,14 @@ pub trait Store: Send + Sync + 'static {
     ) -> Result<(), StoreError>;
 
     /// Revert the entity changes from a single block atomically in the store, and update the
-    /// subgraph block pointer from `block_ptr_from` to `block_ptr_to`.
+    /// subgraph block pointer to `block_ptr_to`.
     ///
-    /// `block_ptr_from` must match the current value of the subgraph block pointer.
-    /// `block_ptr_to` must point to the parent block of `block_ptr_from`.
+    /// `block_ptr_to` must point to the parent block of the subgraph block pointer.
     fn revert_block_operations(
         &self,
         subgraph_id: SubgraphDeploymentId,
-        block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
     ) -> Result<(), StoreError>;
-
-    /// Subscribe to changes for specific subgraphs and entities.
-    ///
-    /// Returns a stream of store events that match the input arguments.
-    fn subscribe(&self, entities: Vec<SubscriptionFilter>) -> StoreEventStreamBox;
 
     /// Find the deployment for the current version of subgraph `name` and
     /// return details about it needed for executing queries
@@ -1068,6 +1069,8 @@ pub trait Store: Send + Sync + 'static {
         id: &SubgraphDeploymentId,
         node_id: &NodeId,
     ) -> Result<(), StoreError>;
+
+    fn unassign_subgraph(&self, id: &SubgraphDeploymentId) -> Result<(), StoreError>;
 
     /// Start an existing subgraph deployment. This will reset the state of
     /// the subgraph to a known good state. `ops` needs to contain all the
@@ -1220,13 +1223,8 @@ impl Store for MockStore {
     fn revert_block_operations(
         &self,
         _subgraph_id: SubgraphDeploymentId,
-        _block_ptr_from: EthereumBlockPointer,
         _block_ptr_to: EthereumBlockPointer,
     ) -> Result<(), StoreError> {
-        unimplemented!()
-    }
-
-    fn subscribe(&self, _entities: Vec<SubscriptionFilter>) -> StoreEventStreamBox {
         unimplemented!()
     }
 
@@ -1270,6 +1268,10 @@ impl Store for MockStore {
     }
 
     fn reassign_subgraph(&self, _: &SubgraphDeploymentId, _: &NodeId) -> Result<(), StoreError> {
+        unimplemented!()
+    }
+
+    fn unassign_subgraph(&self, _: &SubgraphDeploymentId) -> Result<(), StoreError> {
         unimplemented!()
     }
 
@@ -1443,8 +1445,6 @@ pub trait QueryStore: Send + Sync {
         &self,
         query: EntityQuery,
     ) -> Result<Vec<BTreeMap<String, q::Value>>, QueryExecutionError>;
-
-    fn subscribe(&self, entities: Vec<SubscriptionFilter>) -> StoreEventStreamBox;
 
     fn is_deployment_synced(&self, id: &SubgraphDeploymentId) -> Result<bool, Error>;
 

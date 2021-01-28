@@ -1,5 +1,7 @@
 //! SQL queries to load dynamic data sources
 
+use std::ops::Bound;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::{ExpressionMethods, JoinOnDsl, QueryDsl, RunQueryDsl};
 
@@ -9,6 +11,8 @@ use graph::{
     data::subgraph::Source,
     prelude::{bigdecimal::ToPrimitive, web3::types::H160, BigDecimal, StoreError},
 };
+
+use crate::block_range::first_block_in_range;
 
 // Diesel tables for some of the metadata
 // See also: ed42d219c6704a4aab57ce1ea66698e7
@@ -103,6 +107,9 @@ pub fn load(conn: &PgConnection, id: &str) -> Result<Vec<StoredDynamicDataSource
     use dynamic_ethereum_contract_data_source as decds;
     use ethereum_contract_source as ecs;
 
+    // Query to load the data sources. Ordering by the creation block and `vid` makes sure they are
+    // in insertion order which is important for the correctness of reverts and the execution order
+    // of triggers. See also 8f1bca33-d3b7-4035-affc-fd6161a12448.
     let dds: Vec<_> = decds::table
         .inner_join(ecs::table.on(decds::source.eq(ecs::id)))
         .filter(decds::deployment.eq(id))
@@ -111,22 +118,34 @@ pub fn load(conn: &PgConnection, id: &str) -> Result<Vec<StoredDynamicDataSource
             decds::name,
             decds::context,
             (ecs::address, ecs::abi, ecs::start_block),
+            decds::block_range,
         ))
+        .order_by((decds::ethereum_block_number, decds::vid))
         .load::<(
             String,
             String,
             Option<String>,
             (Option<Vec<u8>>, String, Option<BigDecimal>),
+            (Bound<i32>, Bound<i32>),
         )>(conn)?;
 
-    let mut data_sources = Vec::new();
-    for (ds_id, name, context, source) in dds.into_iter() {
+    let mut data_sources: Vec<StoredDynamicDataSource> = Vec::new();
+    for (ds_id, name, context, source, range) in dds.into_iter() {
         let source = to_source(id, &ds_id, source)?;
+        let creation_block = first_block_in_range(&range);
         let data_source = StoredDynamicDataSource {
             name,
             source,
             context,
+            creation_block: creation_block.map(|n| n as u64),
         };
+
+        if !(data_sources.last().and_then(|d| d.creation_block) <= data_source.creation_block) {
+            return Err(StoreError::ConstraintViolation(
+                "data sources not ordered by creation block".to_string(),
+            ));
+        }
+
         data_sources.push(data_source);
     }
     Ok(data_sources)

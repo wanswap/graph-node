@@ -7,6 +7,7 @@ use diesel::{
     dsl::{delete, insert_into, select, sql, update},
     sql_types::Integer,
 };
+use graph::data::subgraph::schema::SubgraphError;
 use graph::data::subgraph::{
     schema::{MetadataType, SubgraphManifestEntity},
     SubgraphFeature,
@@ -16,7 +17,6 @@ use graph::prelude::{
     DeploymentState, EntityChange, EntityChangeOperation, EthereumBlockPointer, Schema, StoreError,
     StoreEvent, SubgraphDeploymentId,
 };
-use graph::{data::subgraph::schema::SubgraphError, prelude::BLOCK_NUMBER_MAX};
 use stable_hash::crypto::SetHasher;
 use std::str::FromStr;
 use std::{collections::BTreeSet, convert::TryFrom, ops::Bound};
@@ -502,14 +502,26 @@ pub(crate) fn has_non_fatal_errors(
     id: &SubgraphDeploymentId,
     block: Option<BlockNumber>,
 ) -> Result<bool, StoreError> {
+    use subgraph_deployment as d;
     use subgraph_error as e;
 
-    let block = block.unwrap_or(BLOCK_NUMBER_MAX);
+    let block = match block {
+        Some(block) => d::table.select(sql(&block.to_string())).into_boxed(),
+        None => d::table
+            .filter(d::id.eq(id.as_str()))
+            .select(d::latest_ethereum_block_number)
+            .into_boxed(),
+    };
+
     select(diesel::dsl::exists(
         e::table
             .filter(e::subgraph_id.eq(id.as_str()))
             .filter(e::deterministic)
-            .filter(sql("block_range @> ").bind::<Integer, _>(block)),
+            .filter(
+                sql("block_range @> ")
+                    .bind(block.single_value())
+                    .sql("::int"),
+            ),
     ))
     .get_result(conn)
     .map_err(|e| e.into())
@@ -555,6 +567,19 @@ pub(crate) fn insert_subgraph_errors(
     check_health(conn, id)
 }
 
+#[cfg(debug_assertions)]
+pub(crate) fn error_count(
+    conn: &PgConnection,
+    id: &SubgraphDeploymentId,
+) -> Result<usize, StoreError> {
+    use subgraph_error as e;
+
+    Ok(e::table
+        .filter(e::subgraph_id.eq(id.as_str()))
+        .count()
+        .get_result::<i64>(conn)? as usize)
+}
+
 /// Checks if the subgraph is healthy or unhealthy as of the latest block, based on the presence of
 /// deterministic errors. Has no effect on failed subgraphs.
 fn check_health(conn: &PgConnection, id: &SubgraphDeploymentId) -> Result<(), StoreError> {
@@ -598,11 +623,10 @@ pub(crate) fn revert_subgraph_errors(
     check_health(conn, id)
 }
 
-/// Drop the schema for `subgraph`. This deletes all data for the subgraph,
-/// and can not be reversed. It does not remove any of the metadata in
-/// `subgraphs.entities` associated with the subgraph
-#[cfg(debug_assertions)]
-pub fn drop_entities(
+/// Drop the schema `namespace`. This deletes all data for the subgraph,
+/// and can not be reversed. It does not remove any of the metadata
+/// in the `subgraphs` schema for the deployment
+pub fn drop_schema(
     conn: &diesel::pg::PgConnection,
     namespace: &crate::primary::Namespace,
 ) -> Result<(), StoreError> {
@@ -610,60 +634,4 @@ pub fn drop_entities(
 
     let query = format!("drop schema if exists {} cascade", namespace);
     Ok(conn.batch_execute(&*query)?)
-}
-
-#[test]
-fn subgraph_error() {
-    use subgraph_error as e;
-
-    test_store::run_test_with_conn(|conn| {
-        let subgraph_id = SubgraphDeploymentId::new("testSubgraph").unwrap();
-        test_store::create_test_subgraph(&subgraph_id, "type Foo { id: ID! }");
-
-        let error = SubgraphError {
-            subgraph_id: subgraph_id.clone(),
-            message: "test".to_string(),
-            block_ptr: None,
-            handler: None,
-            deterministic: false,
-        };
-
-        let count = || -> i64 {
-            e::table
-                .filter(e::subgraph_id.eq(subgraph_id.as_str()))
-                .count()
-                .get_result(conn)
-                .unwrap()
-        };
-
-        assert!(count() == 0);
-
-        crate::deployment::insert_subgraph_error(conn, error).unwrap();
-        assert!(count() == 1);
-
-        let error = SubgraphError {
-            subgraph_id: subgraph_id.clone(),
-            message: "test".to_string(),
-            block_ptr: None,
-            handler: None,
-            deterministic: false,
-        };
-
-        // Inserting the same error is allowed but ignored.
-        crate::deployment::insert_subgraph_error(conn, error).unwrap();
-        assert!(count() == 1);
-
-        let error2 = SubgraphError {
-            subgraph_id: subgraph_id.clone(),
-            message: "test2".to_string(),
-            block_ptr: None,
-            handler: None,
-            deterministic: false,
-        };
-
-        crate::deployment::insert_subgraph_error(conn, error2).unwrap();
-        assert!(count() == 2);
-
-        test_store::remove_subgraphs();
-    })
 }

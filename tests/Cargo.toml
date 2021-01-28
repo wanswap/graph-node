@@ -1,8 +1,10 @@
 [package]
 name = "graph-tests"
-version = "0.20.0"
+version = "0.21.1"
 edition = "2018"
 
 [dev-dependencies]
 duct = "0.13"
 lazy_static = "1.4.0"
+fail = { version = "0.4", features = ["failpoints"] }
+defer = "0.1"

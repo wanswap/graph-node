@@ -141,18 +141,10 @@ impl StoreTrait for NetworkStore {
     fn revert_block_operations(
         &self,
         subgraph_id: graph::prelude::SubgraphDeploymentId,
-        block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
     ) -> Result<(), graph::prelude::StoreError> {
         self.store
-            .revert_block_operations(subgraph_id, block_ptr_from, block_ptr_to)
-    }
-
-    fn subscribe(
-        &self,
-        entities: Vec<graph::prelude::SubscriptionFilter>,
-    ) -> graph::prelude::StoreEventStreamBox {
-        self.store.subscribe(entities)
+            .revert_block_operations(subgraph_id, block_ptr_to)
     }
 
     fn deployment_state_from_name(
@@ -216,6 +208,10 @@ impl StoreTrait for NetworkStore {
         node: &NodeId,
     ) -> Result<(), StoreError> {
         self.store.reassign_subgraph(id, node)
+    }
+
+    fn unassign_subgraph(&self, id: &SubgraphDeploymentId) -> Result<(), StoreError> {
+        self.store.unassign_subgraph(id)
     }
 
     fn create_subgraph(&self, name: SubgraphName) -> Result<String, StoreError> {
@@ -291,7 +287,6 @@ impl QueryStoreManager for NetworkStore {
         Ok(Arc::new(QueryStore::new(
             store,
             self.chain_store.clone(),
-            for_subscription,
             site,
             replica,
         )))

@@ -2,9 +2,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::result;
 use std::sync::Arc;
 
-use graph::components::store::*;
-use graph::data::graphql::{object, ObjectOrInterface};
+use graph::data::{
+    graphql::{object, ObjectOrInterface},
+    schema::META_FIELD_TYPE,
+};
 use graph::prelude::*;
+use graph::{components::store::*, data::schema::BLOCK_FIELD_TYPE};
 
 use crate::query::ext::BlockConstraint;
 use crate::schema::ast as sast;
@@ -17,6 +20,7 @@ use crate::store::query::{collect_entities_from_query_field, parse_subgraph_id};
 pub struct StoreResolver {
     logger: Logger,
     pub(crate) store: Arc<dyn QueryStore>,
+    subscription_manager: Arc<dyn SubscriptionManager>,
     pub(crate) block_ptr: Option<EthereumBlockPointer>,
     deployment: SubgraphDeploymentId,
     has_non_fatal_errors: bool,
@@ -34,10 +38,12 @@ impl StoreResolver {
         logger: &Logger,
         deployment: SubgraphDeploymentId,
         store: Arc<dyn QueryStore>,
+        subscription_manager: Arc<dyn SubscriptionManager>,
     ) -> Self {
         StoreResolver {
             logger: logger.new(o!("component" => "StoreResolver")),
             store,
+            subscription_manager,
             block_ptr: None,
             deployment,
 
@@ -55,6 +61,7 @@ impl StoreResolver {
     pub async fn at_block(
         logger: &Logger,
         store: Arc<dyn QueryStore>,
+        subscription_manager: Arc<dyn SubscriptionManager>,
         bc: BlockConstraint,
         error_policy: ErrorPolicy,
         deployment: SubgraphDeploymentId,
@@ -75,6 +82,7 @@ impl StoreResolver {
         let resolver = StoreResolver {
             logger: logger.new(o!("component" => "StoreResolver")),
             store,
+            subscription_manager,
             block_ptr: Some(block_ptr),
             deployment,
             has_non_fatal_errors,
@@ -178,6 +186,7 @@ impl StoreResolver {
             let block = object! {
                 hash: hash,
                 number: number,
+                __typename: BLOCK_FIELD_TYPE
             };
             map.insert("prefetch:block".to_string(), q::Value::List(vec![block]));
             map.insert(
@@ -187,6 +196,10 @@ impl StoreResolver {
             map.insert(
                 "hasIndexingErrors".to_string(),
                 q::Value::Boolean(self.has_non_fatal_errors),
+            );
+            map.insert(
+                "__typename".to_string(),
+                q::Value::String(META_FIELD_TYPE.to_string()),
             );
             return Ok((None, Some(q::Value::Object(map))));
         }
@@ -273,12 +286,15 @@ impl Resolver for StoreResolver {
 
         // Subscribe to the store and return the entity change stream
         let deployment_id = parse_subgraph_id(object_type)?;
-        Ok(self.store.subscribe(entities).throttle_while_syncing(
-            &self.logger,
-            self.store.clone(),
-            deployment_id,
-            *SUBSCRIPTION_THROTTLE_INTERVAL,
-        ))
+        Ok(self
+            .subscription_manager
+            .subscribe(entities)
+            .throttle_while_syncing(
+                &self.logger,
+                self.store.clone(),
+                deployment_id,
+                *SUBSCRIPTION_THROTTLE_INTERVAL,
+            ))
     }
 
     fn post_process(&self, result: &mut QueryResult) -> Result<(), anyhow::Error> {

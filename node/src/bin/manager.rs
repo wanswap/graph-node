@@ -12,7 +12,7 @@ use graph::{
 };
 use graph_node::config;
 use graph_node::store_builder::StoreBuilder;
-use graph_store_postgres::{connection_pool::ConnectionPool, PRIMARY_SHARD};
+use graph_store_postgres::{connection_pool::ConnectionPool, ShardedStore, PRIMARY_SHARD};
 
 use crate::config::Config;
 use graph_node::manager::commands;
@@ -60,9 +60,47 @@ pub enum Command {
     Info {
         /// The deployment, an id, schema name or subgraph name
         name: String,
+        /// List only current version
+        #[structopt(long, short)]
+        current: bool,
+        /// List only pending versions
+        #[structopt(long, short)]
+        pending: bool,
+        /// List only used (current and pending) versions
+        #[structopt(long, short)]
+        used: bool,
     },
     /// Print how a specific subgraph would be placed
     Place { name: String, network: String },
+    /// Manage unused deployments
+    ///
+    /// Record which deployments are unused with `record`, then remove them
+    /// with `remove`
+    Unused(UnusedCommand),
+}
+
+#[derive(Clone, Debug, StructOpt)]
+pub enum UnusedCommand {
+    /// List unused deployments
+    List {
+        /// Only list unused deployments that still exist
+        #[structopt(short, long)]
+        existing: bool,
+    },
+    /// Update and record currently unused deployments
+    Record,
+    /// Remove deployments that were marked as unused with `record`.
+    ///
+    /// Deployments are removed in descending order of number of entities,
+    /// i.e., smaller deployments are removed before larger ones
+    Remove {
+        /// How many unused deployments to remove (default: all)
+        #[structopt(short, long)]
+        count: Option<usize>,
+        /// Remove a specific deployment
+        #[structopt(short, long, conflicts_with = "count")]
+        deployment: Option<String>,
+    },
 }
 
 impl From<Opt> for config::Opt {
@@ -74,14 +112,26 @@ impl From<Opt> for config::Opt {
     }
 }
 
-fn make_main_pool(logger: &Logger, config: &Config) -> ConnectionPool {
+fn make_registry(logger: &Logger) -> Arc<MetricsRegistry> {
     let prometheus_registry = Arc::new(Registry::new());
-    let metrics_registry = Arc::new(MetricsRegistry::new(
+    Arc::new(MetricsRegistry::new(
         logger.clone(),
         prometheus_registry.clone(),
-    ));
+    ))
+}
+
+fn make_main_pool(logger: &Logger, config: &Config) -> ConnectionPool {
     let primary = config.primary_store();
-    StoreBuilder::main_pool(&logger, PRIMARY_SHARD.as_str(), primary, metrics_registry)
+    StoreBuilder::main_pool(
+        &logger,
+        PRIMARY_SHARD.as_str(),
+        primary,
+        make_registry(logger),
+    )
+}
+
+fn make_store(logger: &Logger, config: &Config) -> Arc<ShardedStore> {
+    StoreBuilder::make_sharded_store(logger, config, make_registry(logger))
 }
 
 #[tokio::main]
@@ -115,11 +165,29 @@ async fn main() {
             let pool = make_main_pool(&logger, &config);
             commands::txn_speed::run(pool, delay)
         }
-        Info { name } => {
+        Info {
+            name,
+            current,
+            pending,
+            used,
+        } => {
             let pool = make_main_pool(&logger, &config);
-            commands::info::run(pool, name)
+            commands::info::run(pool, name, current, pending, used)
         }
         Place { name, network } => commands::place::run(&config.deployment, &name, &network),
+        Unused(cmd) => {
+            let store = make_store(&logger, &config);
+            use UnusedCommand::*;
+
+            match cmd {
+                List { existing } => commands::unused_deployments::list(store, existing),
+                Record => commands::unused_deployments::record(store),
+                Remove { count, deployment } => {
+                    let count = count.unwrap_or(1_000_000);
+                    commands::unused_deployments::remove(store, count, deployment)
+                }
+            }
+        }
     };
     if let Err(e) = result {
         die!("error: {}", e)

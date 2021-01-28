@@ -1137,6 +1137,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fail"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be3c61c59fdc91f5dbc3ea31ee8623122ce80057058be560654c5d410d181a6"
+dependencies = [
+ "lazy_static",
+ "log 0.4.11",
+ "rand 0.7.3",
+]
+
+[[package]]
 name = "failure"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1495,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "graph"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "Inflector",
  "anyhow",
@@ -1551,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "graph-chain-arweave"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
  "graph",
@@ -1559,13 +1570,14 @@ dependencies = [
 
 [[package]]
 name = "graph-chain-ethereum"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
  "chrono",
  "config",
  "diesel",
  "dirs 3.0.1",
+ "fail",
  "futures 0.1.30",
  "graph",
  "graph-core",
@@ -1582,12 +1594,13 @@ dependencies = [
 
 [[package]]
 name = "graph-core"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "atomic_refcell",
  "bytes 0.5.6",
+ "fail",
  "futures 0.1.30",
  "futures 0.3.8",
  "graph",
@@ -1610,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "graph-graphql"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "Inflector",
  "anyhow",
@@ -1631,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "graph-mock"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "futures 0.1.30",
  "graph",
@@ -1643,13 +1656,14 @@ dependencies = [
 
 [[package]]
 name = "graph-node"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "assert_cli",
  "clap",
  "crossbeam-channel 0.5.0",
  "diesel",
  "env_logger 0.8.2",
+ "fail",
  "futures 0.3.8",
  "git-testament",
  "graph",
@@ -1679,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "graph-runtime-derive"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "quote 0.6.13",
  "syn 0.15.44",
@@ -1687,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "graph-runtime-wasm"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1707,6 +1721,7 @@ dependencies = [
  "hex 0.4.2",
  "ipfs-api",
  "lazy_static",
+ "never",
  "semver 0.10.0",
  "strum",
  "strum_macros",
@@ -1717,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "graph-server-http"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "futures 0.1.30",
  "graph",
@@ -1731,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "graph-server-index-node"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "futures 0.3.8",
  "graph",
@@ -1744,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "graph-server-json-rpc"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "graph",
  "jsonrpc-http-server",
@@ -1754,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "graph-server-metrics"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "futures 0.1.30",
  "graph",
@@ -1767,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "graph-server-websocket"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "anyhow",
  "futures 0.1.30",
@@ -1783,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "graph-store-postgres"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "Inflector",
  "async-trait",
@@ -1817,9 +1832,11 @@ dependencies = [
 
 [[package]]
 name = "graph-tests"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
+ "defer",
  "duct",
+ "fail",
  "lazy_static",
 ]
 
@@ -2639,6 +2656,12 @@ dependencies = [
  "libc",
  "winapi 0.3.9",
 ]
+
+[[package]]
+name = "never"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c96aba5aa877601bb3f6dd6a63a969e1f82e60646e81e71b14496995e9853c91"
 
 [[package]]
 name = "nom"
@@ -4240,7 +4263,7 @@ dependencies = [
 
 [[package]]
 name = "test-store"
-version = "0.20.0"
+version = "0.21.1"
 dependencies = [
  "diesel",
  "graph",

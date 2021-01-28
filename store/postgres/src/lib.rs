@@ -58,8 +58,10 @@ pub mod layout_for_tests {
 
 pub use self::chain_head_listener::ChainHeadUpdateListener;
 pub use self::chain_store::ChainStore;
+pub use self::detail::DeploymentDetail;
 pub use self::network_store::NetworkStore;
-pub use self::sharded_store::{DeploymentPlacer, Shard, ShardedStore, PRIMARY_SHARD};
+pub use self::primary::UnusedDeployment;
+pub use self::sharded_store::{unused, DeploymentPlacer, Shard, ShardedStore, PRIMARY_SHARD};
 pub use self::store::{Store, StoreConfig};
 pub use self::store_events::SubscriptionManager;
 
@@ -68,7 +70,9 @@ pub use self::store_events::SubscriptionManager;
 pub mod command_support {
     pub mod catalog {
         pub use crate::primary::Connection;
-        pub use crate::primary::{deployment_schemas, subgraph, subgraph_version};
+        pub use crate::primary::{
+            deployment_schemas, subgraph, subgraph_deployment_assignment, subgraph_version,
+        };
     }
     pub use crate::entities::Connection;
     pub use crate::primary::Namespace;

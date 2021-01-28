@@ -1,7 +1,8 @@
 use atomic_refcell::AtomicRefCell;
+use fail::fail_point;
 use futures01::sync::mpsc::{channel, Receiver, Sender};
 use lazy_static::lazy_static;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -477,8 +478,68 @@ where
         loop {
             let block = match block_stream.next().await {
                 Some(Ok(BlockStreamEvent::Block(block))) => block,
-                Some(Ok(BlockStreamEvent::Revert)) => {
-                    // On revert, clear the entity cache.
+                Some(Ok(BlockStreamEvent::Revert(subgraph_ptr))) => {
+                    info!(
+                        logger,
+                        "Reverting block to get back to main chain";
+                        "block_number" => format!("{}", subgraph_ptr.number),
+                        "block_hash" => format!("{}", subgraph_ptr.hash)
+                    );
+
+                    // We would like to revert the DB state to the parent of the current block.
+                    // First, load the block in order to get the parent hash.
+                    if let Err(e) = ctx
+                        .inputs
+                        .eth_adapter
+                        .load_blocks(
+                            logger.cheap_clone(),
+                            ctx.inputs.store.cheap_clone(),
+                            HashSet::from_iter(Some(subgraph_ptr.hash)),
+                        )
+                        .collect()
+                        .compat()
+                        .await
+                        .map(|blocks| {
+                            assert_eq!(blocks.len(), 1);
+                            blocks.into_iter().next().unwrap()
+                        })
+                        .and_then(|block| {
+                            // Produce pointer to parent block (using parent hash).
+                            let parent_ptr = block
+                                .parent_ptr()
+                                .expect("genesis block cannot be reverted");
+
+                            // Revert entity changes from this block, and update subgraph ptr.
+                            ctx.inputs
+                                .store
+                                .revert_block_operations(
+                                    ctx.inputs.deployment_id.clone(),
+                                    parent_ptr,
+                                )
+                                .map_err(Into::into)
+                        })
+                    {
+                        debug!(
+                            &logger,
+                            "Block stream produced a non-fatal error";
+                            "error" => e.to_string(),
+                        );
+                        continue;
+                    }
+
+                    ctx.block_stream_metrics
+                        .reverted_blocks
+                        .set(subgraph_ptr.number as f64);
+
+                    // Revert the in-memory state:
+                    // - Remove hosts for reverted dynamic data sources.
+                    // - Clear the entity cache.
+                    //
+                    // Note that we do not currently revert the filters, which means the filters
+                    // will be broader than necessary. This is not ideal for performance, but is not
+                    // incorrect since we will discard triggers that match the filters but do not
+                    // match any data sources.
+                    ctx.state.instance.revert_data_sources(subgraph_ptr.number);
                     ctx.state.entity_lfu_cache = LfuCache::new();
                     continue;
                 }
@@ -578,7 +639,7 @@ enum BlockProcessingError {
     #[error("{0:#}")]
     Unknown(Error),
 
-    // The error had a determinstic cause but, for a possibly non-deterministic reason, we chose to
+    // The error had a deterministic cause but, for a possibly non-deterministic reason, we chose to
     // halt processing due to the error.
     #[error("{0}")]
     Deterministic(SubgraphError),
@@ -670,32 +731,19 @@ where
     )
     .await
     {
-        // The triggers were processed but some were skipped due to deterministic errors.
-        Ok(block_state) if block_state.has_errors() => {
-            // While the version is pending we fail the subgraph even if the error is deterministic.
-            // This prevents a buggy pending version from replacing a current version.
-            let store = &ctx.inputs.store;
-            let id = &ctx.inputs.deployment_id;
-            let fail_fast = || -> Result<bool, BlockProcessingError> {
-                Ok(!*DISABLE_FAIL_FAST
-                    && !store
-                        .is_deployment_synced(id)
-                        .map_err(BlockProcessingError::Unknown)?)
-            };
-
-            if !ctx
-                .inputs
-                .features
-                .contains(&SubgraphFeature::nonFatalErrors)
-                || fail_fast()?
-            {
-                // Take just the first error to report.
-                return Err(BlockProcessingError::Deterministic(
-                    block_state.deterministic_errors.into_iter().next().unwrap(),
-                ));
-            }
-
-            block_state
+        // The triggers were processed but some were skipped due to deterministic errors, if the
+        // `nonFatalErrors` feature is not present, return early with an error.
+        Ok(block_state)
+            if block_state.has_errors()
+                && !ctx
+                    .inputs
+                    .features
+                    .contains(&SubgraphFeature::nonFatalErrors) =>
+        {
+            // Take just the first error to report.
+            return Err(BlockProcessingError::Deterministic(
+                block_state.deterministic_errors.into_iter().next().unwrap(),
+            ));
         }
 
         // Triggers processed with no errors.
@@ -825,6 +873,8 @@ where
         .await?;
     }
 
+    let has_errors = block_state.has_errors();
+
     let section = ctx.host_metrics.stopwatch.start_section("as_modifications");
     let ModificationsAndCache {
         modifications: mods,
@@ -857,8 +907,17 @@ where
     let stopwatch = ctx.host_metrics.stopwatch.clone();
     let start = Instant::now();
 
+    let store = &ctx.inputs.store;
+    let id = &ctx.inputs.deployment_id;
+    let fail_fast = || -> Result<bool, BlockProcessingError> {
+        Ok(!*DISABLE_FAIL_FAST
+            && !store
+                .is_deployment_synced(id)
+                .map_err(BlockProcessingError::Unknown)?)
+    };
+
     match ctx.inputs.store.transact_block_operations(
-        subgraph_id,
+        subgraph_id.cheap_clone(),
         block_ptr_after,
         mods,
         stopwatch,
@@ -867,8 +926,22 @@ where
         Ok(_) => {
             let elapsed = start.elapsed().as_secs_f64();
             metrics.block_ops_transaction_duration.observe(elapsed);
+
+            // To prevent a buggy pending version from replacing a current version, if errors are
+            // present the subgraph will be unassigned.
+            if has_errors && fail_fast()? {
+                store
+                    .unassign_subgraph(&subgraph_id)
+                    .map_err(|e| BlockProcessingError::Unknown(e.into()))?;
+
+                // Use `Canceled` to avoiding setting the subgraph health to failed, an error was
+                // just transacted so it will be already be set to unhealthy.
+                return Err(BlockProcessingError::Canceled);
+            }
+
             Ok((ctx, needs_restart))
         }
+
         Err(e) => Err(anyhow!("Error while processing block stream for a subgraph: {}", e).into()),
     }
 }
@@ -996,16 +1069,19 @@ where
                 data_sources.push(data_source);
                 runtime_hosts.push(host);
             }
-            None => warn!(
-                logger,
-                "no runtime hosted created, there is already a runtime host instantiated for \
-                 this data source";
-                "name" => &data_source.name,
-                "address" => &data_source.source.address
-                    .map(|address| address.to_string())
-                    .unwrap_or("none".to_string()),
-                "abi" => &data_source.source.abi
-            ),
+            None => {
+                fail_point!("error_on_duplicate_ds", |_| Err(anyhow!("duplicate ds")));
+                warn!(
+                    logger,
+                    "no runtime hosted created, there is already a runtime host instantiated for \
+                     this data source";
+                    "name" => &data_source.name,
+                    "address" => &data_source.source.address
+                        .map(|address| address.to_string())
+                        .unwrap_or("none".to_string()),
+                    "abi" => &data_source.source.abi
+                )
+            }
         }
     }
 

@@ -39,7 +39,7 @@ where
                 .iter()
                 .map(|template| (template.name.as_str(), template)),
         );
-        let mut data_sources = vec![];
+        let mut data_sources: Vec<DataSource> = vec![];
 
         for stored in self
             .store
@@ -50,6 +50,7 @@ where
                 name,
                 source,
                 context,
+                creation_block,
             } = stored;
 
             let template = template_map.get(name.as_str()).ok_or_else(|| {
@@ -70,7 +71,16 @@ where
                 source,
                 mapping: template.mapping.clone(),
                 context,
+                creation_block,
             };
+
+            // The data sources are ordered by the creation block.
+            // See also 8f1bca33-d3b7-4035-affc-fd6161a12448.
+            anyhow::ensure!(
+                data_sources.last().and_then(|d| d.creation_block) <= ds.creation_block,
+                "Assertion failure: new data source has lower creation block than existing ones"
+            );
+
             data_sources.push(ds);
         }
 

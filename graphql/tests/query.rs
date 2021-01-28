@@ -24,7 +24,7 @@ use graph_graphql::{prelude::*, subscription::execute_subscription};
 use test_store::{
     execute_subgraph_query_with_complexity, execute_subgraph_query_with_deadline,
     run_test_sequentially, transact_entity_operations, transact_errors, BLOCK_ONE, GENESIS_PTR,
-    LOAD_MANAGER, LOGGER, STORE,
+    LOAD_MANAGER, LOGGER, STORE, SUBSCRIPTION_MANAGER,
 };
 
 const NETWORK_NAME: &str = "fake_network";
@@ -244,6 +244,7 @@ async fn execute_query_document_with_variables(
     let runner = Arc::new(GraphQlRunner::new(
         &*LOGGER,
         STORE.clone(),
+        SUBSCRIPTION_MANAGER.clone(),
         LOAD_MANAGER.clone(),
     ));
     let target = QueryTarget::Deployment(id.clone());
@@ -860,6 +861,7 @@ fn query_complexity_subscriptions() {
         let options = SubscriptionExecutionOptions {
             logger: logger.clone(),
             store: store.clone(),
+            subscription_manager: SUBSCRIPTION_MANAGER.clone(),
             timeout: None,
             max_complexity,
             max_depth: 100,
@@ -903,6 +905,7 @@ fn query_complexity_subscriptions() {
         let options = SubscriptionExecutionOptions {
             logger,
             store,
+            subscription_manager: SUBSCRIPTION_MANAGER.clone(),
             timeout: None,
             max_complexity,
             max_depth: 100,
@@ -1269,6 +1272,7 @@ fn subscription_gets_result_even_without_events() {
         let options = SubscriptionExecutionOptions {
             logger: logger.clone(),
             store,
+            subscription_manager: SUBSCRIPTION_MANAGER.clone(),
             timeout: None,
             max_complexity: None,
             max_depth: 100,
@@ -1547,7 +1551,7 @@ fn query_detects_reorg() {
 
         // Revert one block
         STORE
-            .revert_block_operations(id.clone(), BLOCK_ONE.clone(), GENESIS_PTR.clone())
+            .revert_block_operations(id.clone(), GENESIS_PTR.clone())
             .unwrap();
         // A query is still fine since we implicitly query at block 0; we were
         // at block 1 when we got `state`, and reorged once by one block, which
@@ -1581,7 +1585,7 @@ fn query_detects_reorg() {
 fn can_query_meta() {
     run_test_sequentially(setup, |_, id| async move {
         // metadata for the latest block (block 1)
-        let query = "query { _meta { deployment block { hash number } } }";
+        let query = "query { _meta { deployment block { hash number __typename } __typename } }";
         let query = graphql_parser::parse_query(query)
             .expect("invalid test query")
             .into_static();
@@ -1591,9 +1595,11 @@ fn can_query_meta() {
             _meta: object! {
                 block: object! {
                     hash: "0x8511fa04b64657581e3f00e14543c1d522d5d7e771b54aa3060b662ade47da13",
-                    number: 1
+                    number: 1,
+                    __typename: "_Block_"
                 },
-                deployment: "graphqlTestsQuery"
+                deployment: "graphqlTestsQuery",
+                __typename: "_Meta_"
             },
         };
         assert_eq!(extract_data!(result), Some(exp));
@@ -1726,7 +1732,7 @@ fn non_fatal_errors() {
 
             // Test error reverts.
             STORE
-                .revert_block_operations(id.clone(), BLOCK_TWO.block_ptr(), *BLOCK_ONE)
+                .revert_block_operations(id.clone(), *BLOCK_ONE)
                 .unwrap();
             let query = "query { musician(id: \"m1\") { id }  _meta { hasIndexingErrors } }";
             let query = graphql_parser::parse_query(query).unwrap().into_static();

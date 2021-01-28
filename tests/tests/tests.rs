@@ -118,6 +118,19 @@ fn big_decimal() {
 #[test]
 fn non_fatal_errors() {
     let _m = TEST_MUTEX.lock();
-    std::env::set_var("GRAPH_DISABLE_FAIL_FAST", "yesplease");
     run_test("non-fatal-errors");
+}
+
+#[test]
+fn data_source_revert() {
+    let _m = TEST_MUTEX.lock();
+
+    // Reorg block 1.
+    std::env::set_var(
+        "FAILPOINTS",
+        "test_reorg=return(2);error_on_duplicate_ds=return",
+    );
+    let _env_guard = defer::defer(|| std::env::remove_var("FAILPOINTS"));
+
+    run_test("data-source-revert");
 }

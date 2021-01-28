@@ -101,6 +101,10 @@ fn read_expensive_queries() -> Result<Vec<Arc<q::Document>>, std::io::Error> {
 async fn main() {
     env_logger::init();
 
+    // Allow configuring fail points on debug builds. Used for integration tests.
+    #[cfg(debug_assertions)]
+    std::mem::forget(fail::FailScenario::setup());
+
     let opt = opt::Opt::from_args();
 
     // Set up logger
@@ -255,6 +259,7 @@ async fn main() {
             let graphql_runner = Arc::new(GraphQlRunner::new(
                 &logger,
                 generic_network_store,
+                store_builder.subscription_manager(),
                 load_manager,
             ));
             let mut graphql_server = GraphQLQueryServer::new(
@@ -357,7 +362,6 @@ async fn main() {
                 &logger_factory,
                 link_resolver.clone(),
                 store_builder.store(),
-                graphql_runner.clone(),
             );
 
             // Forward subgraph events from the subgraph provider to the subgraph instance manager
@@ -381,6 +385,7 @@ async fn main() {
                 link_resolver,
                 Arc::new(subgraph_provider),
                 store_builder.store(),
+                store_builder.subscription_manager(),
                 network_stores,
                 eth_networks.clone(),
                 node_id.clone(),

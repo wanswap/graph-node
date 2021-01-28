@@ -1,3 +1,4 @@
+use detail::DeploymentDetail;
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -8,7 +9,7 @@ use graph::components::store::{EntityType, StoredDynamicDataSource};
 use graph::data::subgraph::status;
 use graph::prelude::{
     error, CancelGuard, CancelHandle, CancelToken, CancelableError, PoolWaitStats,
-    SubgraphDeploymentEntity, SubscriptionFilter,
+    SubgraphDeploymentEntity,
 };
 use lazy_static::lazy_static;
 use lru_time_cache::LruCache;
@@ -32,7 +33,7 @@ use graph::prelude::{
     BlockNumber, CheapClone, DeploymentState, DynTryFuture, Entity, EntityKey, EntityModification,
     EntityOrder, EntityQuery, EntityRange, Error, EthereumBlockPointer, EthereumCallCache, Logger,
     MetadataOperation, MetricsRegistry, QueryExecutionError, Schema, StopwatchMetrics, StoreError,
-    StoreEvent, StoreEventStreamBox, SubgraphDeploymentId, Value, BLOCK_NUMBER_MAX,
+    StoreEvent, SubgraphDeploymentId, Value, BLOCK_NUMBER_MAX,
 };
 
 use graph_graphql::prelude::api_schema;
@@ -41,7 +42,6 @@ use web3::types::{Address, H256};
 use crate::primary::Site;
 use crate::relational::{Layout, METADATA_LAYOUT};
 use crate::relational_queries::FromEntityData;
-use crate::store_events::SubscriptionManager;
 use crate::{connection_pool::ConnectionPool, detail, entities as e};
 use crate::{deployment, primary::Namespace};
 
@@ -166,7 +166,6 @@ pub(crate) struct SubgraphInfo {
 
 pub struct StoreInner {
     logger: Logger,
-    subscriptions: Arc<SubscriptionManager>,
 
     conn: ConnectionPool,
     read_only_pools: Vec<ConnectionPool>,
@@ -200,7 +199,6 @@ impl Deref for Store {
 impl Store {
     pub fn new(
         logger: &Logger,
-        subscriptions: Arc<SubscriptionManager>,
         pool: ConnectionPool,
         read_only_pools: Vec<ConnectionPool>,
         mut pool_weights: Vec<usize>,
@@ -236,7 +234,6 @@ impl Store {
         // Create the store
         let store = StoreInner {
             logger: logger.clone(),
-            subscriptions,
             conn: pool,
             read_only_pools,
             replica_order,
@@ -283,6 +280,13 @@ impl Store {
             }
             Ok(event)
         })
+    }
+
+    // Remove the data and metadata for the deployment `site`. This operation
+    // is not reversible
+    pub(crate) fn drop_deployment(&self, site: &Site) -> Result<(), StoreError> {
+        let conn = self.get_conn()?;
+        conn.transaction(|| e::Connection::drop_deployment(&conn, site))
     }
 
     /// Gets an entity from Postgres.
@@ -763,6 +767,14 @@ impl Store {
         Ok(deployment::block_ptr(&conn.conn, subgraph_id)?)
     }
 
+    pub(crate) fn deployment_details(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<Vec<DeploymentDetail>, StoreError> {
+        let conn = self.get_conn()?;
+        conn.transaction(|| -> Result<_, StoreError> { detail::deployment_details(&conn, ids) })
+    }
+
     pub(crate) fn deployment_statuses(
         &self,
         ids: Vec<String>,
@@ -1030,35 +1042,35 @@ impl Store {
     pub(crate) fn revert_block_operations(
         &self,
         site: &Site,
-        block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
     ) -> Result<StoreEvent, StoreError> {
-        // Sanity check on block numbers
-        if block_ptr_from.number != block_ptr_to.number + 1 {
-            panic!("revert_block_operations must revert a single block only");
-        }
-        // Don't revert past a graft point
         let econn = self.get_entity_conn(site, ReplicaId::Main)?;
-        let info = self.subgraph_info_with_conn(&econn.conn, &site.deployment)?;
-        if let Some(graft_block) = info.graft_block {
-            if graft_block as u64 > block_ptr_to.number {
-                return Err(anyhow!(
-                    "Can not revert subgraph `{}` to block {} as it was \
-                    grafted at block {} and reverting past a graft point \
-                    is not possible",
-                    site.deployment.clone(),
-                    block_ptr_to.number,
-                    graft_block
-                )
-                .into());
-            }
-        }
 
         let event = econn.transaction(|| -> Result<_, StoreError> {
-            assert_eq!(
-                Some(block_ptr_from),
-                Self::block_ptr_with_conn(&site.deployment, &econn)?
-            );
+            // Unwrap: If we are reverting then the block ptr is not `None`.
+            let block_ptr_from = Self::block_ptr_with_conn(&site.deployment, &econn)?.unwrap();
+
+            // Sanity check on block numbers
+            if block_ptr_from.number != block_ptr_to.number + 1 {
+                panic!("revert_block_operations must revert a single block only");
+            }
+
+            // Don't revert past a graft point
+            let info = self.subgraph_info_with_conn(&econn.conn, &site.deployment)?;
+            if let Some(graft_block) = info.graft_block {
+                if graft_block as u64 > block_ptr_to.number {
+                    return Err(anyhow!(
+                        "Can not revert subgraph `{}` to block {} as it was \
+                        grafted at block {} and reverting past a graft point \
+                        is not possible",
+                        site.deployment.clone(),
+                        block_ptr_to.number,
+                        graft_block
+                    )
+                    .into());
+                }
+            }
+
             let metadata_event =
                 deployment::revert_block_ptr(&econn.conn, &site.deployment, block_ptr_to)?;
 
@@ -1068,10 +1080,6 @@ impl Store {
         })?;
 
         Ok(event)
-    }
-
-    pub(crate) fn subscribe(&self, entities: Vec<SubscriptionFilter>) -> StoreEventStreamBox {
-        self.subscriptions.subscribe(entities)
     }
 
     pub(crate) fn deployment_state_from_id(
@@ -1190,6 +1198,12 @@ impl Store {
             deployment::unfail(&econn.conn, &site.deployment)?;
             econn.start_subgraph(logger, graft_base)
         })
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn error_count(&self, id: &SubgraphDeploymentId) -> Result<usize, StoreError> {
+        let conn = self.get_conn()?;
+        deployment::error_count(&conn, id)
     }
 }
 
