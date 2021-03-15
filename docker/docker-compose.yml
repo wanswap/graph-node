@@ -19,6 +19,7 @@ services:
       ipfs: 'ipfs:5001'
       ethereum: 'mainnet:http://host.docker.internal:8545'
       RUST_LOG: info
+      GRAPH_ETH_CALL_BY_NUMBER: 'true'
   ipfs:
     image: ipfs/go-ipfs:v0.4.23
     ports:
